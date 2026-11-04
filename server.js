@@ -130,28 +130,42 @@ app.get('/dailyquiz/result', async (req, res) => {
 });
 
 // ── GET /dailyquiz/leaderboard-today ──
-// Leaderboard untuk tanggal terbaru di daily_answers (dipakai HomePage)
+// Leaderboard HARI INI saja (WIB). Kalau belum ada attempt hari ini → leaderboard kosong.
 app.get('/dailyquiz/leaderboard-today', async (req, res) => {
   try {
-    const dateResult = await pool.query(
-      `SELECT MAX(quiz_date)::text AS active_date FROM daily_answers`
+    // 1) Hari ini (WIB)
+    const todayResult = await pool.query(
+      `SELECT (NOW() AT TIME ZONE 'Asia/Jakarta')::date::text AS today`
     );
-    const quizDate = dateResult.rows[0]?.active_date;
+    const today = todayResult.rows[0]?.today;
+    if (!today) {
+      return res.json({ quiz_date: null, total_questions: 0, leaderboard: [] });
+    }
 
-    if (!quizDate) {
+    // 2) Apakah ada attempt di daily_answers untuk HARI INI?
+    const todayAttemptsRes = await pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM daily_answers WHERE quiz_date = $1`,
+      [today]
+    );
+    const todayAttempts = todayAttemptsRes.rows[0]?.cnt ?? 0;
+
+    // Belum ada attempt hari ini → kosong (jangan tampilkan data kemarin)
+    if (todayAttempts === 0) {
       return res.json({
-        quiz_date: null,
+        quiz_date: today,
         total_questions: 0,
         leaderboard: [],
       });
     }
 
+    // 3) Total soal untuk hari ini
     const totalRes = await pool.query(
       `SELECT COUNT(*)::int AS total FROM dailyquiz WHERE quiz_date = $1`,
-      [quizDate]
+      [today]
     );
     const totalQuestions = totalRes.rows[0]?.total ?? 0;
 
+    // 4) Leaderboard hari ini (skor + best streak)
     const lbRes = await pool.query(
       `WITH ordered AS (
          SELECT
@@ -189,7 +203,7 @@ app.get('/dailyquiz/leaderboard-today', async (req, res) => {
        WHERE da.quiz_date = $1
        GROUP BY da.user_id, ms.best_streak
        ORDER BY score DESC, streak DESC, last_answered ASC`,
-      [quizDate]
+      [today]
     );
 
     const leaderboard = lbRes.rows.map((row, idx) => ({
@@ -200,7 +214,7 @@ app.get('/dailyquiz/leaderboard-today', async (req, res) => {
     }));
 
     res.json({
-      quiz_date: quizDate,
+      quiz_date: today,
       total_questions: totalQuestions,
       leaderboard,
     });
