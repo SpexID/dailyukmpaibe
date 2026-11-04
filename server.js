@@ -5,12 +5,34 @@ const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
+
+// ✅ CORS — izinkan frontend lokal + production kamu
+// Ganti array `origin` sesuai domain frontend production nanti
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // allow request tanpa Origin (misal curl, Postman, mobile app)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
 app.use(bodyParser.json());
 
+// ✅ Pool dengan timeout — hindari hang kalau pool penuh
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
 });
 
 // ═════════════════════════════════════════════════════════════
@@ -18,8 +40,6 @@ const pool = new Pool({
 // ═════════════════════════════════════════════════════════════
 
 // ── GET /dailyquiz/result?name=gh ──
-// Data lengkap untuk halaman ResultPage
-// Tanggal otomatis pakai yang terbaru dari daily_answers
 app.get('/dailyquiz/result', async (req, res) => {
   const { name: nameParam } = req.query;
 
@@ -130,10 +150,10 @@ app.get('/dailyquiz/result', async (req, res) => {
 });
 
 // ── GET /dailyquiz/leaderboard-today ──
-// Leaderboard HARI INI saja (WIB). Kalau belum ada attempt hari ini → leaderboard kosong.
+// Leaderboard HARI INI (WIB). Kalau belum ada attempt hari ini → kosong.
 app.get('/dailyquiz/leaderboard-today', async (req, res) => {
   try {
-    // 1) Hari ini (WIB)
+    // 1) Hari ini WIB
     const todayResult = await pool.query(
       `SELECT (NOW() AT TIME ZONE 'Asia/Jakarta')::date::text AS today`
     );
@@ -142,14 +162,13 @@ app.get('/dailyquiz/leaderboard-today', async (req, res) => {
       return res.json({ quiz_date: null, total_questions: 0, leaderboard: [] });
     }
 
-    // 2) Apakah ada attempt di daily_answers untuk HARI INI?
+    // 2) Apakah ada attempt hari ini?
     const todayAttemptsRes = await pool.query(
       `SELECT COUNT(*)::int AS cnt FROM daily_answers WHERE quiz_date = $1`,
       [today]
     );
     const todayAttempts = todayAttemptsRes.rows[0]?.cnt ?? 0;
 
-    // Belum ada attempt hari ini → kosong (jangan tampilkan data kemarin)
     if (todayAttempts === 0) {
       return res.json({
         quiz_date: today,
@@ -158,14 +177,14 @@ app.get('/dailyquiz/leaderboard-today', async (req, res) => {
       });
     }
 
-    // 3) Total soal untuk hari ini
+    // 3) Total soal hari ini
     const totalRes = await pool.query(
       `SELECT COUNT(*)::int AS total FROM dailyquiz WHERE quiz_date = $1`,
       [today]
     );
     const totalQuestions = totalRes.rows[0]?.total ?? 0;
 
-    // 4) Leaderboard hari ini (skor + best streak)
+    // 4) Leaderboard hari ini
     const lbRes = await pool.query(
       `WITH ordered AS (
          SELECT
@@ -225,8 +244,6 @@ app.get('/dailyquiz/leaderboard-today', async (req, res) => {
 });
 
 // ── GET /dailyquiz/active ──
-// Satu request → pertanyaan + jawaban + explanation sekaligus
-// quiz_date pakai ::text biar tidak kena timezone drift
 app.get('/dailyquiz/active', async (req, res) => {
   try {
     const dateResult = await pool.query(
@@ -511,8 +528,6 @@ app.post('/dailyquiz/submit', async (req, res) => {
 });
 
 // ── POST /dailyquiz/complete ──
-// Simpan jawaban ke daily_answers
-// body: { name, quiz_date, answers: [{question_order, user_answer}] }
 app.post('/dailyquiz/complete', async (req, res) => {
   const { name, quiz_date, answers } = req.body;
 
@@ -630,8 +645,11 @@ app.post('/dailyquiz/complete', async (req, res) => {
 });
 
 // ═════════════════════════════════════════════════════════════
-// 🚀 START SERVER
+// 🚀 START SERVER — WAJIB 0.0.0.0:8080 untuk Fly.io
 // ═════════════════════════════════════════════════════════════
-app.listen(process.env.PORT || 3000, () => {
-  console.log(`Server is running on port ${process.env.PORT}`);
+const PORT = process.env.PORT || 8080;
+const HOST = '0.0.0.0';
+
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
 });
